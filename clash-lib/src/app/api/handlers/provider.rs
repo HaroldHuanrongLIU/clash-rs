@@ -14,6 +14,7 @@ use crate::{
     app::{
         api::AppState, outbound::manager::ThreadSafeOutboundManager,
         remote_content_manager::providers::proxy_provider::ThreadSafeProxyProvider,
+        router::ArcRouter,
     },
     proxy::AnyOutboundHandler,
 };
@@ -194,6 +195,97 @@ async fn get_proxy_delay(
         Err(err) => (
             StatusCode::BAD_REQUEST,
             format!("get delay for {n} failed with error: {err}"),
+        )
+            .into_response(),
+    }
+}
+
+// ── Rule provider routes ────────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct RuleProviderState {
+    router: ArcRouter,
+}
+
+pub fn rule_routes(router: ArcRouter) -> Router<Arc<AppState>> {
+    let state = RuleProviderState { router };
+    Router::new()
+        .route("/", get(get_rule_providers))
+        .route(
+            "/{provider_name}",
+            get(get_rule_provider).put(update_rule_provider),
+        )
+        .route("/{provider_name}/rules", get(get_rule_provider_rules))
+        .with_state(state)
+}
+
+async fn get_rule_providers(
+    State(state): State<RuleProviderState>,
+) -> impl IntoResponse {
+    let mut providers = HashMap::new();
+    for (name, p) in state.router.get_rule_providers() {
+        providers.insert(name.clone(), p.as_map().await);
+    }
+    let mut res = HashMap::new();
+    res.insert("providers", providers);
+    axum::response::Json(res)
+}
+
+#[derive(Deserialize)]
+struct RuleProviderNamePath {
+    provider_name: String,
+}
+
+async fn get_rule_provider(
+    State(state): State<RuleProviderState>,
+    Path(RuleProviderNamePath { provider_name }): Path<RuleProviderNamePath>,
+) -> impl IntoResponse {
+    match state.router.get_rule_providers().get(&provider_name) {
+        Some(p) => axum::response::Json(p.as_map().await).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("rule provider {provider_name} not found"),
+        )
+            .into_response(),
+    }
+}
+
+async fn update_rule_provider(
+    State(state): State<RuleProviderState>,
+    Path(RuleProviderNamePath { provider_name }): Path<RuleProviderNamePath>,
+) -> impl IntoResponse {
+    match state.router.get_rule_providers().get(&provider_name) {
+        Some(p) => match p.update().await {
+            Ok(_) => (StatusCode::ACCEPTED, "rule provider update started")
+                .into_response(),
+            Err(err) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("update rule provider {provider_name} failed: {err}"),
+            )
+                .into_response(),
+        },
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("rule provider {provider_name} not found"),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_rule_provider_rules(
+    State(state): State<RuleProviderState>,
+    Path(RuleProviderNamePath { provider_name }): Path<RuleProviderNamePath>,
+) -> impl IntoResponse {
+    match state.router.get_rule_providers().get(&provider_name) {
+        Some(p) => {
+            let rules = p.list_rules(500).await;
+            let mut res = HashMap::new();
+            res.insert("rules", rules);
+            axum::response::Json(res).into_response()
+        }
+        None => (
+            StatusCode::NOT_FOUND,
+            format!("rule provider {provider_name} not found"),
         )
             .into_response(),
     }

@@ -86,10 +86,18 @@ struct Inner {
     content: RuleContent,
 }
 
+#[async_trait]
 pub trait RuleProvider: Provider {
     fn search(&self, sess: &Session) -> bool;
     fn behavior(&self) -> RuleSetBehavior;
     fn format(&self) -> RuleSetFormat;
+    /// Returns up to `limit` rules as strings. Only Classical providers return
+    /// non-empty results; Domain/IPCIDR data structures don't support
+    /// enumeration.
+    async fn list_rules(&self, limit: usize) -> Vec<String> {
+        let _ = limit;
+        vec![]
+    }
 }
 
 pub type ThreadSafeRuleProvider = Arc<dyn RuleProvider + Send + Sync>;
@@ -295,6 +303,18 @@ impl RuleProvider for RuleProviderImpl {
     fn format(&self) -> RuleSetFormat {
         self.format
     }
+
+    async fn list_rules(&self, limit: usize) -> Vec<String> {
+        let inner = self.inner.read().await;
+        match &inner.content {
+            RuleContent::Classical(rules) => rules
+                .iter()
+                .take(limit)
+                .map(|r| format!("{},{}", r.type_name(), r.payload()))
+                .collect(),
+            _ => vec![],
+        }
+    }
 }
 
 #[async_trait]
@@ -383,6 +403,15 @@ impl Provider for RuleProviderImpl {
 
         m.insert("behavior".to_owned(), Box::new(self.behavior().to_string()));
         m.insert("format".to_owned(), Box::new(self.format().to_string()));
+
+        let rule_count = {
+            let inner = self.inner.read().await;
+            match &inner.content {
+                RuleContent::Classical(rules) => rules.len(),
+                _ => 0,
+            }
+        };
+        m.insert("ruleCount".to_owned(), Box::new(rule_count));
 
         m
     }
